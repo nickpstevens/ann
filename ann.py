@@ -184,13 +184,22 @@ def main(options):
         num_training_iters = default_num_training_iters
 
     if cv_option == 1:
-        accuracy, accuracy_std, precision, precision_std, recall, recall_std, area_under_roc \
+        accuracy, precision, recall, area_under_roc \
             = run(example_set, example_set, num_hidden_units, weight_decay_coeff, num_training_iters)
+        accuracy_std = 0.0
+        precision_std = 0.0
+        recall_std = 0.0
         print('Area under ROC:\t' + str("%0.6f" % area_under_roc) + '\n')
     else:
         fold_set = k_folds_stratified(example_set, schema, 5)
-        accuracy, accuracy_std, precision, precision_std, recall, recall_std \
-            = run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff, num_training_iters)
+        accuracy_vals, precision_vals, recall_vals = \
+            run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff, num_training_iters)
+        accuracy = np.mean(accuracy_vals)
+        accuracy_std = np.std(accuracy_vals, ddof=1)
+        precision = np.mean(precision_vals)
+        precision_std = np.std(precision_vals, ddof=1)
+        recall = np.mean(recall_vals)
+        recall_std = np.std(recall_vals, ddof=1)
 
     print('Accuracy:\t' + str("%0.6f" % accuracy) + '\t' + str("%0.6f" % accuracy_std))
     print('Precision:\t' + str("%0.6f" % precision) + '\t' + str("%0.6f" % precision_std))
@@ -224,12 +233,9 @@ def k_folds_stratified(example_set, schema, k):
 def run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff, num_training_iters):
     num_folds = len(fold_set)
     assert num_folds != 0
-    avg_accuracy = 0.0
-    avg_accuracy_std = 0.0
-    avg_precision = 0.0
-    avg_precision_std = 0.0
-    avg_recall = 0.0
-    avg_recall_std = 0.0
+    accuracy_vals = np.empty(num_folds)
+    precision_vals = np.empty(num_folds)
+    recall_vals = np.empty(num_folds)
     for i in xrange(0, num_folds):
         validation_set = fold_set[i]
         training_set = ExampleSet(schema)
@@ -237,17 +243,14 @@ def run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff,
             k = (i + j) % num_folds
             for example in fold_set[k]:
                 training_set.append(example)
-        accuracy, accuracy_std, precision, precision_std, recall, recall_std, area_under_roc \
+        accuracy, precision, recall, area_under_roc \
             = run(training_set, validation_set, num_hidden_units, weight_decay_coeff, num_training_iters)
         print('Fold ' + str(i+1))
         print('Area under ROC:\t' + str(area_under_roc) + '\n')
-        avg_accuracy += (1.0/num_folds) * accuracy
-        avg_accuracy_std += (1.0/num_folds) * accuracy_std
-        avg_precision += (1.0/num_folds) * precision
-        avg_precision_std += (1.0/num_folds) * precision_std
-        avg_recall += (1.0/num_folds) * recall
-        avg_recall_std += (1.0/num_folds) * recall_std
-    return avg_accuracy, avg_accuracy_std, avg_precision, avg_precision_std, avg_recall, avg_recall_std
+        np.put(accuracy_vals, i, accuracy)
+        np.put(precision_vals, i, precision)
+        np.put(recall_vals, i, recall)
+    return accuracy_vals, precision_vals, recall_vals
 
 
 def run(training_set, validation_set, num_hidden_units, weight_decay_coeff, num_training_iters):
@@ -267,6 +270,7 @@ def evaluate_ann_performance(ann):
     false_negatives = 0
     actual_labels, assigned_labels = ann.evaluate()
     num_examples = len(actual_labels)
+    assert num_examples > 0
     label_pairs = zip(actual_labels, assigned_labels)
     for labels in label_pairs:
         if labels == (1.0, 1.0):
@@ -283,19 +287,16 @@ def evaluate_ann_performance(ann):
     print('\tFP: ' + str(false_positives))
     print('\tFN: ' + str(false_negatives) + '\n')
     accuracy = float(true_positives + true_negatives) / num_examples
-    accuracy_std = 0.0  # FIXME
     try:
         precision = float(true_positives) / (true_positives + false_positives)
     except ZeroDivisionError:
         precision = 0.0
-    precision_std = 0.0  # FIXME
     try:
         recall = float(true_positives) / (true_positives + false_negatives)
     except ZeroDivisionError:
         recall = 0.0
-    recall_std = 0.0  # FIXME
     area_under_roc = 0.0  # FIXME
-    return accuracy, accuracy_std, precision, precision_std, recall, recall_std, area_under_roc
+    return accuracy, precision, recall, area_under_roc
 
 
 if __name__ == "__main__":
