@@ -56,27 +56,29 @@ class ANN(object):
         standardized = np.nan_to_num(standardized)
         return standardized
 
-    def train(self, num_training_iters):
+    def train(self, num_training_iters, chunk_size=1):
         if num_training_iters == 0:
             while not np.array_equal(self.output_labels, self.training_labels):
-                self.stochastic_learning()
+                self.stochastic_learning(chunk_size)
             print(self.output_labels)
             print(self.training_labels)
         else:
             for i in range(0, num_training_iters):
-                self.stochastic_learning()
+                self.stochastic_learning(chunk_size)
 
-    def stochastic_learning(self):
+    def stochastic_learning(self, chunk_size):
         """
         For each example in the training set, feed it through the neural network and then use backpropagation to update
-        the weights. Stochastic learning is used here instead of batch learning to avoid local minima, but also because
-        I got tired of dealing with accumulated errors that were too big for the sigmoid function to handle.
+        the weights. This is implemented as stochastic learning, but it supports a sort-of "mini-batch" functionality.
+        Basically, you can set the number of examples to be passed through the network at a time. Unfortunately, to get
+        the best accuracy, this number should be set to 1. I thought this would be a cool feature that speeds things up,
+        but it just makes convergence take way longer. So it's pretty much useless.
         """
-        for i in xrange(0, self.num_training_examples):
-            actual_label = np.array(self.training_labels[i], ndmin=2)
-            example = np.array(self.training_examples[i, :], ndmin=2)
-            self.feedforward(example, i)
-            self.backpropagation(actual_label, example)
+        for i in xrange(0, self.num_training_examples, chunk_size):
+            actual_labels = np.array(self.training_labels[i:i+chunk_size], ndmin=2)
+            examples = np.array(self.training_examples[i:i+chunk_size, :], ndmin=2)
+            self.feedforward(examples, i)
+            self.backpropagation(actual_labels, examples)
         print('Iteration accuracy:\t' + str(np.sum(self.output_labels == self.training_labels) /
                                             float(self.num_training_examples)))
 
@@ -87,43 +89,91 @@ class ANN(object):
         # Feed examples through Output Layer
         self.output_inputs = np.dot(self.hidden_outputs, self.output_weights)
         self.output_sigmoids = self.sigmoid(self.output_inputs)
-        new_label = self.binary_values(self.output_sigmoids)
-        np.put(self.output_labels, index, new_label)
+        new_labels = self.binary_values(self.output_sigmoids)
+        np.put(self.output_labels, index, new_labels)
 
-    def backpropagation(self, actual_label, example):
-        output_dl_dw = self.calc_output_dl_dw(actual_label)
-        hidden_dl_dw = self.calc_hidden_dl_dw(example, output_dl_dw)
+    def backpropagation(self, actual_labels, examples):
+        output_dl_dw = self.calc_output_dl_dw(actual_labels)
+        hidden_dl_dw = self.calc_hidden_dl_dw(examples, output_dl_dw)
         self.update_weights(output_dl_dw, hidden_dl_dw)
 
     def update_weights(self, output_dl_dw, hidden_dl_dw):
         self.output_weights -= (self.LEARNING_RATE * (output_dl_dw + self.weight_decay_coeff * self.output_weights))
         self.hidden_weights -= (self.LEARNING_RATE * (hidden_dl_dw + self.weight_decay_coeff * self.hidden_weights))
 
-    def calc_output_dl_dw(self, actual_label):
+    def calc_output_dl_dw(self, actual_labels):
         """
         Calculates the loss due to the output-layer weights between the output unit and the hidden-layer outputs.
+
+        Returned matrix should have shape (num_hidden_units, 1)
         """
-        subtracted_term = self.output_sigmoids - actual_label
+        """
+        subtracted_term = self.output_sigmoids - actual_labels
         d_sigmoid = self.d_sigmoid(self.output_inputs)
         d_sigmoid_times_inputs = np.dot(self.hidden_outputs.T, d_sigmoid)
-        dl_dw = np.dot(d_sigmoid_times_inputs, subtracted_term)
-        return dl_dw
+        dl_dw = np.dot(d_sigmoid_times_inputs, subtracted_term.T)
+        return np.sum(dl_dw, axis=0)
+        """
+        #print('output_sigmoids: ' + str(self.output_sigmoids.shape))
+        #print('actual_labels: ' + str(actual_labels.shape))
+        subtracted_term = self.output_sigmoids - actual_labels
+        #print('subtracted_term: ' + str(subtracted_term.shape))
+        d_sigmoid = self.d_sigmoid(self.output_inputs)
+        #print('d_sigmoid: ' + str(d_sigmoid.shape))
+        #print('hidden_outputs: ' + str(self.hidden_outputs.shape))
+        d_sigmoid_times_inputs = np.dot(self.hidden_outputs.T, d_sigmoid)
+        #print('d_sigmoid_times_inputs: ' + str(d_sigmoid_times_inputs.shape))
+        dl_dw = np.dot(d_sigmoid_times_inputs, subtracted_term.T)
+        #print('dl_dw: ' + str(dl_dw.shape))
+        dl_dw_sum = np.mean(dl_dw, axis=1)
+        dl_dw_sum = np.reshape(dl_dw_sum, (dl_dw_sum.shape[0], -1))
+        #print('dl_dw_sum: ' + str(dl_dw_sum.shape))
+        return dl_dw_sum
 
-    def calc_hidden_dl_dw(self, example, output_dl_dw):
+    def calc_hidden_dl_dw(self, examples, output_dl_dw):
         """
         Calculates the loss due to the hidden-layer weights between the hidden layer and the input units.
         This calculation is simplified by the fact that the only downstream unit is the single output unit.
+
+        Returned matrix should have shape (num_features, num_hidden_units)
+        """
         """
         d_sigmoid = self.d_sigmoid(self.hidden_inputs)
-        d_sigmoid_times_examples = np.dot(example.T, d_sigmoid)
+        d_sigmoid_times_examples = np.dot(examples.T, d_sigmoid) # Old
         downstream = np.apply_along_axis(self.calc_downstream_component, 1, self.hidden_outputs, output_dl_dw)
-        downstream_avg = np.average(downstream, axis=0)
+        #downstream = output_dl_dw * (self.output_weights / examples)
+        downstream_avg = np.mean(downstream, axis=0)
         downstream_avg = np.reshape(downstream_avg, (downstream_avg.shape[0], -1))
         dl_dw = np.multiply(d_sigmoid_times_examples, downstream_avg.T)
         return dl_dw
+        """
+        d_sigmoid = self.d_sigmoid(self.hidden_inputs)
+        #print('d_sigmoid: ' + str(d_sigmoid.shape))
+        #print('examples: ' + str(examples.shape))
+        d_sigmoid_times_examples = np.dot(examples.T, d_sigmoid)
+        #print('d_sigmoid_times_examples: ' + str(d_sigmoid_times_examples.shape))
+        #print('output_weights: ' + str(self.output_weights.shape))
+        #print('hidden_outputs: ' + str(self.hidden_outputs.shape))
+        # quotient = self.output_weights / examples  # This should NOT be examples. Should be hidden outputs
+        quotient = self.output_weights / self.hidden_outputs.T
+        #print('quotient: ' + str(quotient.shape))
+        #print('output_dl_dw: ' + str(output_dl_dw.shape))
+        downstream = output_dl_dw * quotient
+        #print('downstream: ' + str(downstream.shape))
+        downstream_sum = np.mean(downstream, axis=1)
+        downstream_sum = np.reshape(downstream_sum, (-1, downstream_sum.shape[0]))
+        #print('downstream_avg: ' + str(downstream_avg.shape))
+        #dl_dw = np.dot(d_sigmoid_times_examples, downstream_avg)
+        dl_dw = d_sigmoid_times_examples * downstream_sum
+        #print(dl_dw)
+        return dl_dw
 
-    def calc_downstream_component(self, example, output_dl_dw):
-        return output_dl_dw.flatten() * np.divide(self.output_weights.flatten(), example)
+    def calc_downstream_component(self, examples, output_dl_dw):
+        # FIXME works for single examples only
+        print(output_dl_dw.shape)
+        print(self.output_weights.shape)
+        print(examples.shape)
+        return output_dl_dw.flatten() * np.divide(self.output_weights.flatten(), examples)
 
     def sigmoid(self, x):
         sigmoid = np.copy(x)
@@ -184,15 +234,14 @@ def main(options):
         num_training_iters = default_num_training_iters
 
     if cv_option == 1:
-        accuracy, precision, recall, area_under_roc \
+        accuracy, precision, recall, false_positive_rate \
             = run(example_set, example_set, num_hidden_units, weight_decay_coeff, num_training_iters)
-        accuracy_std = 0.0
-        precision_std = 0.0
-        recall_std = 0.0
-        print('Area under ROC:\t' + str("%0.6f" % area_under_roc) + '\n')
+        print('Accuracy:\t' + str("%0.6f" % accuracy))
+        print('Precision:\t' + str("%0.6f" % precision))
+        print('Recall:\t\t' + str("%0.6f" % recall))
     else:
         fold_set = k_folds_stratified(example_set, schema, 5)
-        accuracy_vals, precision_vals, recall_vals = \
+        accuracy_vals, precision_vals, recall_vals, fpr_vals = \
             run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff, num_training_iters)
         accuracy = np.mean(accuracy_vals)
         accuracy_std = np.std(accuracy_vals, ddof=1)
@@ -200,10 +249,11 @@ def main(options):
         precision_std = np.std(precision_vals, ddof=1)
         recall = np.mean(recall_vals)
         recall_std = np.std(recall_vals, ddof=1)
-
-    print('Accuracy:\t' + str("%0.6f" % accuracy) + '\t' + str("%0.6f" % accuracy_std))
-    print('Precision:\t' + str("%0.6f" % precision) + '\t' + str("%0.6f" % precision_std))
-    print('Recall:\t\t' + str("%0.6f" % recall) + '\t' + str("%0.6f" % recall_std))
+        area_under_roc = find_area_under_roc(fpr_vals, recall_vals)
+        print('Accuracy:\t' + str("%0.6f" % accuracy) + '\t' + str("%0.6f" % accuracy_std))
+        print('Precision:\t' + str("%0.6f" % precision) + '\t' + str("%0.6f" % precision_std))
+        print('Recall:\t\t' + str("%0.6f" % recall) + '\t' + str("%0.6f" % recall_std))
+        print('Area under ROC:\t' + str("%0.6f" % area_under_roc) + '\n')
 
 
 def k_folds_stratified(example_set, schema, k):
@@ -236,6 +286,7 @@ def run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff,
     accuracy_vals = np.empty(num_folds)
     precision_vals = np.empty(num_folds)
     recall_vals = np.empty(num_folds)
+    fpr_vals = np.empty(num_folds)
     for i in xrange(0, num_folds):
         validation_set = fold_set[i]
         training_set = ExampleSet(schema)
@@ -243,23 +294,23 @@ def run_cross_validation(fold_set, schema, num_hidden_units, weight_decay_coeff,
             k = (i + j) % num_folds
             for example in fold_set[k]:
                 training_set.append(example)
-        accuracy, precision, recall, area_under_roc \
+        print('Fold ' + str(i + 1))
+        accuracy, precision, recall, false_positive_rate \
             = run(training_set, validation_set, num_hidden_units, weight_decay_coeff, num_training_iters)
-        print('Fold ' + str(i+1))
-        print('Area under ROC:\t' + str(area_under_roc) + '\n')
         np.put(accuracy_vals, i, accuracy)
         np.put(precision_vals, i, precision)
         np.put(recall_vals, i, recall)
-    return accuracy_vals, precision_vals, recall_vals
+        np.put(fpr_vals, i, false_positive_rate)
+    return accuracy_vals, precision_vals, recall_vals, fpr_vals
 
 
 def run(training_set, validation_set, num_hidden_units, weight_decay_coeff, num_training_iters):
     assert isinstance(training_set, ExampleSet)
-    print('Building ANN\n')
+    print('Building ANN')
     ann = ANN(training_set, validation_set, num_hidden_units, weight_decay_coeff)
-    print('Training ANN\n')
+    print('\nTraining ANN')
     ann.train(num_training_iters)
-    print('Evaluating ANN performance\n')
+    print('\nEvaluating ANN performance\n')
     return evaluate_ann_performance(ann)
 
 
@@ -295,8 +346,29 @@ def evaluate_ann_performance(ann):
         recall = float(true_positives) / (true_positives + false_negatives)
     except ZeroDivisionError:
         recall = 0.0
-    area_under_roc = 0.0  # FIXME
-    return accuracy, precision, recall, area_under_roc
+    try:
+        false_positive_rate = float(false_positives) / (false_positives + true_negatives)
+    except ZeroDivisionError:
+        false_positive_rate = 0.0
+    return accuracy, precision, recall, false_positive_rate
+
+
+def find_area_under_roc(fpr_vals, tpr_vals):
+    assert len(fpr_vals) == len(tpr_vals)
+    roc_data = zip(fpr_vals, tpr_vals)
+    roc_data = np.sort(roc_data, axis=0)  # Sort by false-positive rate
+    first_point = [0, 0]
+    last_point = [1, 1]
+    roc_data = np.vstack([first_point, roc_data, last_point])
+    area = 0
+    for i in xrange(1, len(roc_data)):
+        height = roc_data[i, 0] - roc_data[i-1, 0]
+        if height == 0:
+            pass
+        base = roc_data[i, 1]
+        top = roc_data[i-1, 1]
+        area += 0.5 * (base + top) * height
+    return area
 
 
 if __name__ == "__main__":
