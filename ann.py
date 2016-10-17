@@ -17,6 +17,8 @@ class ANN(object):
     LEARNING_RATE = 0.01
 
     def __init__(self, training_set, validation_set, num_hidden_units, weight_decay_coeff):
+        self.num_hidden_units = num_hidden_units
+        self.weight_decay_coeff = weight_decay_coeff
         # Set up the training and validation sets
         self.full_training_set = np.array(training_set.to_float(), ndmin=2)
         self.full_validation_set = np.array(validation_set.to_float(), ndmin=2)
@@ -34,17 +36,19 @@ class ANN(object):
         (self.num_training_examples, self.num_features) = self.training_examples.shape
         # Make sure training set and validation set are compatible
         assert self.num_features == self.validation_examples.shape[1]
-        # Hidden Layer setup
-        self.hidden_weights = np.random.uniform(-0.1, 0.1, (self.num_features, num_hidden_units))
+        # Weight matrices setup
+        if self.num_hidden_units != 0:
+            self.hidden_weights = np.random.uniform(-0.1, 0.1, (self.num_features, self.num_hidden_units))
+            self.output_weights = np.random.uniform(-0.1, 0.1, (self.num_hidden_units, 1))
+        else:
+            self.hidden_weights = None
+            self.output_weights = np.random.uniform(-0.1, 0.1, (self.num_features, 1))
+        # Additional matrices
         self.hidden_inputs = None
         self.hidden_outputs = None
-        # Output Layer setup
-        self.output_weights = np.random.uniform(-0.1, 0.1, (num_hidden_units, 1))
         self.output_inputs = None
         self.output_sigmoids = None
         self.output_labels = np.empty(self.training_labels.shape)
-        # Other variables
-        self.weight_decay_coeff = weight_decay_coeff
 
     def standardize(self, example_set):
         """
@@ -56,12 +60,20 @@ class ANN(object):
         standardized = np.nan_to_num(standardized)
         return standardized
 
-    def train(self, num_training_iters, chunk_size=1):
+    def train(self, num_training_iters, chunk_size=1, convergence_err=float(1e-8), max_iters=100):
+        assert chunk_size > 0
+        assert convergence_err >= 0.0
+        assert max_iters > 0
         if num_training_iters == 0:
+            i = 0
             while not np.array_equal(self.output_labels, self.training_labels):
-                self.stochastic_learning(chunk_size)
-            print(self.output_labels)
-            print(self.training_labels)
+                output_dl_dw = self.stochastic_learning(chunk_size)
+                i += 1
+                if (np.absolute(output_dl_dw) < convergence_err).all() or i >= max_iters:
+                    # Additional stopping conditions:
+                    # Stop iterating if all errors are smaller than the threshold
+                    # Also stop if too many iterations have occurred
+                    break
         else:
             for i in range(0, num_training_iters):
                 self.stochastic_learning(chunk_size)
@@ -74,106 +86,74 @@ class ANN(object):
         the best accuracy, this number should be set to 1. I thought this would be a cool feature that speeds things up,
         but it just makes convergence take way longer. So it's pretty much useless.
         """
+        output_dl_dw = None
         for i in xrange(0, self.num_training_examples, chunk_size):
             actual_labels = np.array(self.training_labels[i:i+chunk_size], ndmin=2)
             examples = np.array(self.training_examples[i:i+chunk_size, :], ndmin=2)
             self.feedforward(examples, i)
-            self.backpropagation(actual_labels, examples)
+            output_dl_dw = self.backpropagation(actual_labels, examples)
         print('Iteration accuracy:\t' + str(np.sum(self.output_labels == self.training_labels) /
                                             float(self.num_training_examples)))
+        return output_dl_dw
 
     def feedforward(self, examples, index):
-        # Feed examples through Hidden Layer
-        self.hidden_inputs = np.dot(examples, self.hidden_weights)
-        self.hidden_outputs = self.sigmoid(self.hidden_inputs)
-        # Feed examples through Output Layer
-        self.output_inputs = np.dot(self.hidden_outputs, self.output_weights)
+        if self.num_hidden_units != 0:
+            # Feed examples through Hidden Layer
+            self.hidden_inputs = np.dot(examples, self.hidden_weights)
+            self.hidden_outputs = self.sigmoid(self.hidden_inputs)
+            # Feed examples through Output Layer
+            self.output_inputs = np.dot(self.hidden_outputs, self.output_weights)
+        else:
+            self.output_inputs = np.dot(examples, self.output_weights)
         self.output_sigmoids = self.sigmoid(self.output_inputs)
         new_labels = self.binary_values(self.output_sigmoids)
         np.put(self.output_labels, index, new_labels)
 
     def backpropagation(self, actual_labels, examples):
-        output_dl_dw = self.calc_output_dl_dw(actual_labels)
-        hidden_dl_dw = self.calc_hidden_dl_dw(examples, output_dl_dw)
-        self.update_weights(output_dl_dw, hidden_dl_dw)
+        if self.num_hidden_units != 0:
+            output_dl_dw = self.calc_output_dl_dw(actual_labels)
+            hidden_dl_dw = self.calc_hidden_dl_dw(examples, output_dl_dw)
+            self.update_weights(output_dl_dw, hidden_dl_dw)
+        else:
+            output_dl_dw = self.calc_output_dl_dw(actual_labels, examples)
+            self.update_weights(output_dl_dw)
+        return output_dl_dw
 
-    def update_weights(self, output_dl_dw, hidden_dl_dw):
+    def update_weights(self, output_dl_dw, hidden_dl_dw=None):
         self.output_weights -= (self.LEARNING_RATE * (output_dl_dw + self.weight_decay_coeff * self.output_weights))
-        self.hidden_weights -= (self.LEARNING_RATE * (hidden_dl_dw + self.weight_decay_coeff * self.hidden_weights))
+        if hidden_dl_dw is not None:
+            self.hidden_weights -= (self.LEARNING_RATE * (hidden_dl_dw + self.weight_decay_coeff * self.hidden_weights))
 
-    def calc_output_dl_dw(self, actual_labels):
+    def calc_output_dl_dw(self, actual_labels, inputs=None):
         """
         Calculates the loss due to the output-layer weights between the output unit and the hidden-layer outputs.
-
-        Returned matrix should have shape (num_hidden_units, 1)
-        """
+        Returned matrix should have shape (num_hidden_units, 1) or (num_features, 1) if there are no hidden units
         """
         subtracted_term = self.output_sigmoids - actual_labels
         d_sigmoid = self.d_sigmoid(self.output_inputs)
-        d_sigmoid_times_inputs = np.dot(self.hidden_outputs.T, d_sigmoid)
+        if inputs is None:
+            d_sigmoid_times_inputs = np.dot(self.hidden_outputs.T, d_sigmoid)
+        else:
+            d_sigmoid_times_inputs = np.dot(inputs.T, d_sigmoid)
         dl_dw = np.dot(d_sigmoid_times_inputs, subtracted_term.T)
-        return np.sum(dl_dw, axis=0)
-        """
-        #print('output_sigmoids: ' + str(self.output_sigmoids.shape))
-        #print('actual_labels: ' + str(actual_labels.shape))
-        subtracted_term = self.output_sigmoids - actual_labels
-        #print('subtracted_term: ' + str(subtracted_term.shape))
-        d_sigmoid = self.d_sigmoid(self.output_inputs)
-        #print('d_sigmoid: ' + str(d_sigmoid.shape))
-        #print('hidden_outputs: ' + str(self.hidden_outputs.shape))
-        d_sigmoid_times_inputs = np.dot(self.hidden_outputs.T, d_sigmoid)
-        #print('d_sigmoid_times_inputs: ' + str(d_sigmoid_times_inputs.shape))
-        dl_dw = np.dot(d_sigmoid_times_inputs, subtracted_term.T)
-        #print('dl_dw: ' + str(dl_dw.shape))
-        dl_dw_sum = np.mean(dl_dw, axis=1)
-        dl_dw_sum = np.reshape(dl_dw_sum, (dl_dw_sum.shape[0], -1))
-        #print('dl_dw_sum: ' + str(dl_dw_sum.shape))
-        return dl_dw_sum
+        dl_dw_avg = np.sum(dl_dw, axis=1)  # If there are multiple examples, average the partial loss across examples
+        dl_dw_avg = np.reshape(dl_dw_avg, (dl_dw_avg.shape[0], -1))
+        return dl_dw_avg
 
     def calc_hidden_dl_dw(self, examples, output_dl_dw):
         """
         Calculates the loss due to the hidden-layer weights between the hidden layer and the input units.
         This calculation is simplified by the fact that the only downstream unit is the single output unit.
-
         Returned matrix should have shape (num_features, num_hidden_units)
         """
-        """
         d_sigmoid = self.d_sigmoid(self.hidden_inputs)
-        d_sigmoid_times_examples = np.dot(examples.T, d_sigmoid) # Old
-        downstream = np.apply_along_axis(self.calc_downstream_component, 1, self.hidden_outputs, output_dl_dw)
-        #downstream = output_dl_dw * (self.output_weights / examples)
-        downstream_avg = np.mean(downstream, axis=0)
-        downstream_avg = np.reshape(downstream_avg, (downstream_avg.shape[0], -1))
-        dl_dw = np.multiply(d_sigmoid_times_examples, downstream_avg.T)
-        return dl_dw
-        """
-        d_sigmoid = self.d_sigmoid(self.hidden_inputs)
-        #print('d_sigmoid: ' + str(d_sigmoid.shape))
-        #print('examples: ' + str(examples.shape))
         d_sigmoid_times_examples = np.dot(examples.T, d_sigmoid)
-        #print('d_sigmoid_times_examples: ' + str(d_sigmoid_times_examples.shape))
-        #print('output_weights: ' + str(self.output_weights.shape))
-        #print('hidden_outputs: ' + str(self.hidden_outputs.shape))
-        # quotient = self.output_weights / examples  # This should NOT be examples. Should be hidden outputs
         quotient = self.output_weights / self.hidden_outputs.T
-        #print('quotient: ' + str(quotient.shape))
-        #print('output_dl_dw: ' + str(output_dl_dw.shape))
         downstream = output_dl_dw * quotient
-        #print('downstream: ' + str(downstream.shape))
         downstream_sum = np.mean(downstream, axis=1)
         downstream_sum = np.reshape(downstream_sum, (-1, downstream_sum.shape[0]))
-        #print('downstream_avg: ' + str(downstream_avg.shape))
-        #dl_dw = np.dot(d_sigmoid_times_examples, downstream_avg)
         dl_dw = d_sigmoid_times_examples * downstream_sum
-        #print(dl_dw)
         return dl_dw
-
-    def calc_downstream_component(self, examples, output_dl_dw):
-        # FIXME works for single examples only
-        print(output_dl_dw.shape)
-        print(self.output_weights.shape)
-        print(examples.shape)
-        return output_dl_dw.flatten() * np.divide(self.output_weights.flatten(), examples)
 
     def sigmoid(self, x):
         sigmoid = np.copy(x)
@@ -183,22 +163,19 @@ class ANN(object):
         return sigmoid
 
     def d_sigmoid(self, x):
-        """
-        The derivative of the sigmoid function
-        """
+        # The derivative of the sigmoid function
         sigmoid = self.sigmoid(x)
         return sigmoid * (1 - sigmoid)
 
     def binary_values(self, x):
+        # Converts matrix values to binary
         bin_x = np.copy(x)
         bin_x[bin_x > 0.5] = 1
         bin_x[bin_x <= 0.5] = 0
         return bin_x
 
     def evaluate(self):
-        """
-        Feed the validation set through the network
-        """
+        # Feeds the validation set through the network
         num_examples = len(self.validation_examples)
         for i in xrange(0, num_examples):
             example = np.array(self.validation_examples[i, :], ndmin=2)
@@ -221,7 +198,7 @@ def main(options):
     # If 0, use cross-validation. If 1, run algorithm on full sample.
     cv_option = (1 if options[1] == '1' else default_cv_option)
     try:
-        num_hidden_units = (int(options[2]) if int(options[2]) > 0 else default_num_hidden_units)
+        num_hidden_units = (int(options[2]) if int(options[2]) >= 0 else default_num_hidden_units)
     except ValueError:
         num_hidden_units = default_num_hidden_units
     try:
