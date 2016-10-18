@@ -4,10 +4,12 @@ from random import shuffle, seed, randint
 from collections import Counter
 from mldata import *
 
+
 """
 Written by Nick Stevens
 10/9/2016
 """
+
 
 # Useful constants
 CLASS_LABEL = -1
@@ -18,7 +20,6 @@ class ANN(object):
 
     def __init__(self, training_set, validation_set, num_hidden_units, weight_decay_coeff):
         self.num_hidden_units = num_hidden_units
-        self.weight_decay_coeff = weight_decay_coeff
         # Set up the training and validation sets
         self.full_training_set = np.array(training_set.to_float(), ndmin=2)
         self.full_validation_set = np.array(validation_set.to_float(), ndmin=2)
@@ -34,6 +35,8 @@ class ANN(object):
         self.training_examples = self.standardize(self.training_examples)
         self.validation_examples = self.standardize(self.validation_examples)
         (self.num_training_examples, self.num_features) = self.training_examples.shape
+        # Adjust weight-decay coefficient to account for stochastic learning
+        self.weight_decay_coeff = weight_decay_coeff / self.num_training_examples
         # Make sure training set and validation set are compatible
         assert self.num_features == self.validation_examples.shape[1]
         # Weight matrices setup
@@ -64,6 +67,9 @@ class ANN(object):
         assert chunk_size > 0
         assert convergence_err >= 0.0
         assert max_iters > 0
+        if chunk_size != 1:
+            # Rescale the weight-decay coefficient to account for the number of examples
+            self.weight_decay_coeff *= chunk_size
         if num_training_iters == 0:
             i = 0
             while not np.array_equal(self.output_labels, self.training_labels):
