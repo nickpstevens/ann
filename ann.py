@@ -63,10 +63,11 @@ class ANN(object):
         standardized = np.nan_to_num(standardized)
         return standardized
 
-    def train(self, num_training_iters, chunk_size=1, convergence_err=float(1e-8), max_iters=100):
+    def train(self, num_training_iters, chunk_size=1, convergence_err=float(1e-8), max_iters=10000):
         assert chunk_size > 0
         assert convergence_err >= 0.0
         assert max_iters > 0
+        original_weight_decay = self.weight_decay_coeff
         if chunk_size != 1:
             # Rescale the weight-decay coefficient to account for the number of examples
             self.weight_decay_coeff *= chunk_size
@@ -75,6 +76,8 @@ class ANN(object):
             while not np.array_equal(self.output_labels, self.training_labels):
                 output_dl_dw = self.stochastic_learning(chunk_size)
                 i += 1
+                print('\t' + str(i) + '.\tIteration accuracy:\t' +
+                      str(np.sum(self.output_labels == self.training_labels) / float(self.num_training_examples)))
                 if (np.absolute(output_dl_dw) < convergence_err).all() or i >= max_iters:
                     # Additional stopping conditions:
                     # Stop iterating if all errors are smaller than the threshold
@@ -83,6 +86,9 @@ class ANN(object):
         else:
             for i in range(0, num_training_iters):
                 self.stochastic_learning(chunk_size)
+                print('\t' + str(i+1) + '.\tIteration accuracy:\t' +
+                      str(np.sum(self.output_labels == self.training_labels) / float(self.num_training_examples)))
+        self.weight_decay_coeff = original_weight_decay  # reset this in case it has been changed
 
     def stochastic_learning(self, chunk_size):
         """
@@ -98,8 +104,6 @@ class ANN(object):
             examples = np.array(self.training_examples[i:i+chunk_size, :], ndmin=2)
             self.feedforward(examples, i)
             output_dl_dw = self.backpropagation(actual_labels, examples)
-        print('Iteration accuracy:\t' + str(np.sum(self.output_labels == self.training_labels) /
-                                            float(self.num_training_examples)))
         return output_dl_dw
 
     def feedforward(self, examples, index):
